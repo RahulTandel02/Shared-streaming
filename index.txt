@@ -1,0 +1,339 @@
+const express = require("express");
+const app = express();
+const fs = require('fs');
+const hls = require('hls-server');
+const { getStorage, uploadBytes, ref, getDownloadURL } = require('firebase/storage')
+const { getApp, initializeApp } = require('firebase/app')
+const ffmpeg = require('fluent-ffmpeg')
+const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg')
+const cors = require('cors')
+// const admin = require('')
+// const firebase = require('firebase/storage')
+// const {Sta} 
+
+
+ffmpeg.setFfmpegPath(ffmpegInstaller.path)
+const multer = require('multer');
+const path = require("path");
+const { exists, getManifestStream } = require("hls-server/src/fsProvider");
+const { Readable, PassThrough } = require("stream");
+const { default: axios } = require("axios");
+const storage = multer.memoryStorage()
+var admin = require("firebase-admin");
+const upload = multer({ storage })
+
+app.use(cors({ origin: '*' }))
+
+var serviceAccount = require("./credentials.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+  storageBucket: 'gs://video-streaming-e4f77.appspot.com'
+});
+
+const bucket = admin.storage().bucket()
+
+const uploadToFirebase = async (filePath) => {
+  await bucket.upload(filePath, {
+    destination: path.basename(filePath),
+    public: true,
+    metadata: {
+      cacheControl: 'public, max-age=31536000',
+    },
+  });
+};
+
+const getPublicUrl = (filename) => {
+  return `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(filename)}?alt=media`;
+};
+
+const updatePlaylistUrls = async (playlistPath) => {
+  console.log(playlistPath)
+  let playlistContent = fs.readFileSync(`${__dirname}/videos/output.m3u8`, 'utf8');
+
+  // Match and replace each segment reference with the full URL
+  hlsFiles.forEach(file => {
+    if (file !== 'output.m3u8') {
+      const regex = new RegExp(file, 'g');
+      playlistContent = playlistContent.replace(regex, getPublicUrl(file));
+    }
+  });
+
+  // Write the updated content back to the playlist file
+  fs.writeFileSync(playlistPath, playlistContent, 'utf8');
+};
+
+
+app.get('/download', upload.single('file'), async (req, res) => {
+  try {
+    // const s = admin.storage()
+    console.log('s')
+    const reference = ref(bucket, 'output.m3u8')
+    // getDownloadURL(reference).then((res) => {
+    //   console.log(res)
+    // })
+  } catch (error) {
+    console.log(error)
+  }
+})
+
+
+app.post('/upload', upload.single('file'), (req, res) => {
+  try {
+    ffmpeg.setFfmpegPath(ffmpegInstaller.path)
+    const stream = Readable.from(req.file.buffer)
+    // const tempDir = 
+    const segmentBasePath = 'hls-segments/'
+    // const testStream = fs.createWriteStream('hls-segments/output.m3u8', 'application/vnd.apple.mpegurl')
+    const segmentStream = uploadStreamToFirebase(segmentBasePath + 'index.m3u8', 'application/vnd.apple.mpegurl');
+
+
+    const command = ffmpeg().input(stream).addOptions([
+      '-profile:v baseline',
+      '-level 3.0',
+      '-start_number 0',
+      '-hls_time 10',
+      '-hls_list_size 0',
+      '-f hls'
+    ])
+      .on('end', () => {
+        console.log('done')
+      }).
+      on('error', (err) => {
+        console.log(err)
+        throw new Error(err)
+      })
+
+    command.output('videos/bmw.m3u8')
+      .format('hls')
+      .run();
+
+
+    command.on('stderr', (data) => {
+      // console.log(data)
+    })
+    command.on('progress', function (progress) {
+      // console.log(progress)
+      const hlsFiles = fs.readdirSync(`${__dirname}/videos`)
+      if (hlsFiles.length > 10) {
+
+        // fs.unlinkSync(path.join(__dirname, 'videos', hlsFiles[1]), (err) => {
+        //   console.log(err)
+        // })
+      }
+    });
+
+
+    // command.pipe(segmentStream);
+    // updatePlaylistUrls(path.join(__dirname, 'videos'))
+    // const hlsFiles = fs.readdirSync(`${__dirname}/videos`)
+    // let playlistContent = fs.readFileSync(`${__dirname}/videos/output.m3u8`, 'utf8')
+    // console.log(playlistContent)
+    // hlsFiles.forEach((file) => {
+    //   if (file !== 'output.m3u8') {
+    //     const regex = new RegExp(file, 'g')
+    //     playlistContent = playlistContent.replace(regex, getPublicUrl(file))
+    //     // console.log(playlistContent)
+    //   }
+    // })
+    // fs.writeFileSync(`${__dirname}/videos/output.m3u8`, playlistContent, 'utf8')
+
+    ////////////////////////////
+
+
+
+    // hlsFiles.forEach((file) => {
+    //   uploadToFirebase(path.join(__dirname, 'videos', file))
+    //   // console.log('Master Playlist URL:', masterPlaylistUrl);
+    // })
+    // const masterPlaylistUrl = getPublicUrl('output.m3u8');
+    // console.log(masterPlaylistUrl)
+    // return res.send(masterPlaylistUrl)
+  } catch (error) {
+    console.log(error)
+    return res.send(error)
+  }
+})
+
+
+app.get('/', (req, res) => {
+  return res.status(200).sendFile(`${__dirname}/index.html`)
+})
+
+const server = app.listen(3000, function () {
+  console.log("Listening on port 8000!");
+});
+
+
+
+new hls(server, {
+  provider: {
+    exists: (req, cb) => {
+      const ext = req.url.split('.').pop();
+
+      if (ext !== 'm3u8' && ext !== 'ts') {
+        return cb(null, true);
+      }
+
+      fs.access(__dirname + req.url, fs.constants.F_OK, function (err) {
+        if (err) {
+          console.log('File not exist');
+          return cb(null, false);
+        }
+        cb(null, true);
+      });
+    },
+    getManifestStream: (req, cb) => {
+      const stream = fs.createReadStream(__dirname + req.url);
+      cb(null, stream);
+    },
+    getSegmentStream: (req, cb) => {
+      const stream = fs.createReadStream(__dirname + req.url);
+      cb(null, stream);
+    }
+  }
+});
+
+
+
+// const firebaseApp = getApp()
+
+// app.get('/test', async function (req, res, next) {
+//   try {
+//     ffmpeg('videos/output.mp4')
+//       .addOptions([
+//         '-profile:v baseline', // baseline profile (level 3.0) for H264 video codec
+
+//         '-s 640x360',          // 640px width, 360px height output video dimensions
+//         '-start_number 0',     // start the first .ts segment at index 0
+//         '-hls_time 10',        // 10 second segment duration
+//         '-hls_list_size 0',    // Maximum number of playlist entries (0 means all entries/infinite)
+//         '-f hls'               // HLS format
+//       ])
+//       .output('public/videos/output.m3u8')
+//       .run()
+//   } catch (err) {
+//     console.error('Error:', err);
+
+//   }
+// });
+
+
+// app.post("/test", upload.single('file'), async function (req, res, next) {
+//   console.log('api hit')
+//   const storage1 = getStorage()
+//   const storageRef = ref(storage1, req.file.originalname)
+//   const { buffer, ...metadata } = req.file
+//   // const file = await uploadBytes(storageRef, buffer, metadata)
+
+//   const bufferStream = new Readable();
+//   bufferStream.push(buffer);
+//   bufferStream.push(null);
+
+//   console.log(req.file)
+//   ffmpeg()
+//     .input(bufferStream)
+//     .inputFormat('mp4') // Specify the input format if not provided in the buffer
+//     .addOptions([
+//       '-profile:v baseline', // baseline profile (level 3.0) for H264 video codec
+//       '-level 3.0',
+//       '-s 640x360',          // 640px width, 360px height output video dimensions
+//       '-start_number 0',     // start the first .ts segment at index 0
+//       '-hls_time 10',        // 10 second segment duration
+//       '-hls_list_size 0',    // Maximum number of playlist entries (0 means all entries/infinite)
+//       '-f hls'               // HLS format
+//     ])
+//     .output('public/videos/output.m3u8')
+//     .on('end', () => {
+//       res.send('HLS files generated successfully');
+//     })
+//     .on('error', (err) => {
+//       console.error('Error generating HLS files:', err);
+//       res.status(500).send('Error generating HLS files');
+//     })
+//     .run()
+
+//   // res.send('res')
+//   // let url = ''
+//   // const tempFilePath = 'tempfile.' + req.file.originalname.split('.').pop();
+//   // require('fs').writeFile(tempFilePath, req.file.buffer, (err) => {
+//   //   if (err) throw err;
+
+//   //   //   // Use ffmpeg to convert the temporary file to MP4
+//   //   //   const outputFilePath = 'output.mp4';
+//   //   //   // const command = `ffmpeg -i ${tempFilePath} ${outputFilePath}`;
+
+//   //   ffmpeg(tempFilePath, { timeout: 432000 }).addOptions([
+//   //     '-profile:v baseline',
+//   //     '-level 3.0',
+//   //     '-start_number 0',
+//   //     '-hls_time 10',
+//   //     '-hls_list_size 0',
+//   //     '-f hls'
+//   //   ]).output('videos/output.m3u8').on('end', async () => {
+//   //     console.log('Processing finished !');
+//   //     const files = fs.readdirSync(path.join(__dirname, '/videos'));
+//   //     const buffer = fs.readFileSync(path.join(__dirname, '/videos', files[0]));
+//   //     // upload all files
+//   //     const storage1 = getStorage()
+//   //     const storageRef = ref(storage1, `${req.file.originalname}/${files[0]}`)
+//   //     const metadata = {
+//   //       name: files[0]
+//   //     }
+//   //     const response = await uploadBytes(storageRef, buffer, metadata)
+//   //     url = await getDownloadURL(ref(storage1, response.metadata.fullPath))
+//   //     res.json({
+//   //       href: url,
+//   //       type: 'application/x-mpegurl',
+//   //       title: 'Video Stream'
+//   //     });
+//   //     fs.unlinkSync(tempFilePath);
+//   //   }).run();
+
+//   //   // Send response with generated HLS URL path
+
+//   //   // console.log('end')
+//   //   // const storage1 = getStorage()
+//   //   // const storageRef = ref(storage1)
+//   //   // upload
+//   //   // retrive and convert 
+//   //   // save hls
+//   //   // get hls
+//   //   // stream hls
+//   //   // track status
+//   //   // }).run()
+//   // })
+//   // const storage1 = getStorage()
+//   // const storageRef = ref(storage1, 'test.mp4')
+//   // const { buffer, ...metadata } = req.file
+//   // const file = await uploadBytes(storageRef, buffer, metadata)
+
+//   // console.log(file)
+//   // const downloadUrl = await getDownloadURL(ref(storage1, 'test.mp4'))
+//   // const httpsReference = ref(storage1, downloadUrl);
+
+//   // console.log(httpsReference)
+//   // res.send({ path: __dirname + "/index.html" })
+//   // res.sendFile(__dirname + "/index.html");
+// });
+
+
+// const hls = new HLSServer(server, {
+//   provider: {
+//     exists: (req, callback) => {
+//       callback(null, true)
+//       callback(new Error("server error"))
+//       callback(null, false)
+//     },
+//     getManifestStream: (req, callback) => {
+//       console.log(req)
+//       callback(null, myNodeStream)
+//     },
+//     getSegmentStream: function (req, callback) { // return the correct .ts file
+//       callback(null, myNodeStream)
+//     }
+//   }
+// });
+
+
+

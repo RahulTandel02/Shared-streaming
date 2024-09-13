@@ -1,0 +1,31 @@
+const { default: axios } = require('axios')
+const express = require('express')
+const { initializeApp } = require('firebase/app')
+const { getStorage, ref, getDownloadURL } = require('firebase/storage')
+// const {} = require('')
+
+const firebaseConfig = {
+    apiKey: "AIzaSyDZzyFN1DdmFM6x1LyeMNKmcmH-MazVvtA",
+    authDomain: "video-streaming-e4f77.firebaseapp.com",
+    projectId: "video-streaming-e4f77",
+    storageBucket: "video-streaming-e4f77.appspot.com",
+    messagingSenderId: "747815172723",
+    appId: "1:747815172723:web:3a24b119fb34e8384dc806",
+    measurementId: "G-4SBCR21H6Y",
+    storageBucket: 'gs://video-streaming-e4f77.appspot.com'
+}
+
+const firebaseApp = initializeApp(firebaseConfig)
+
+const app = express()
+const storage = getStorage()
+const pathReference = ref(storage, '0305d795-2f4c-4a8c-a580-c68e6dffcfde/output.m3u8')
+
+getDownloadURL(pathReference).then(async (url) => {
+    const data = await axios.get(url)
+    console.log(data.data)
+})
+
+app.listen(3000, () => {
+    console.log('PORT 3000')
+})
